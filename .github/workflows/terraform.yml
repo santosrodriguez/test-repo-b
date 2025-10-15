@@ -1,0 +1,162 @@
+name: Terraform CI/CD
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment to deploy (dev, test, prod)"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  pr-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      - name: Terraform Init (no backend)
+        run: terraform init -backend=false
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan (PR)
+        env:
+          # Keep PR plans using the dev environment by default to avoid touching prod
+          TF_ENV: dev
+        run: |
+          VAR_FILE="environments/${TF_ENV}/terraform.tfvars"
+          terraform plan -no-color -var-file="$VAR_FILE" | tee plan.txt || true
+
+      - name: Comment plan on PR
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const plan = fs.existsSync('plan.txt') ? fs.readFileSync('plan.txt','utf8') : 'No plan output.';
+            const body = `### Terraform plan
+            \n<details><summary>Show Plan</summary>\n\n\n\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+  plan-on-push:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      - name: Terraform Init (backend configured from secrets)
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER_NAME: ${{ secrets.AZURE_CONTAINER_NAME }}
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          STORAGE_ACCOUNT: ${{ secrets.STORAGE_ACCOUNT }}
+          CONTAINER_NAME: ${{ secrets.CONTAINER_NAME }}
+          RESOURCE_GROUP_NAME: ${{ secrets.RESOURCE_GROUP_NAME }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          # prefer AZURE_* environment secrets; fall back to repo-level names
+          SA="${AZURE_STORAGE_ACCOUNT:-$STORAGE_ACCOUNT}"
+          CN="${AZURE_CONTAINER_NAME:-$CONTAINER_NAME}"
+          RG="${AZURE_RESOURCE_GROUP:-$RESOURCE_GROUP_NAME}"
+          SUB="${AZURE_SUBSCRIPTION_ID:-$SUBSCRIPTION_ID}"
+          terraform init \
+            -backend-config="storage_account_name=${SA}" \
+            -backend-config="container_name=${CN}" \
+            -backend-config="resource_group_name=${RG}" \
+            -backend-config="subscription_id=${SUB}"
+
+      - name: Require environment input
+        run: |
+          # For push-based runs we require an explicit env input (no default)
+          if [ -z "${{ github.event.inputs.env }}" ]; then
+            echo "ERROR: workflow input 'env' is required for push runs. Dispatch with an explicit env (dev/test/prod).";
+            exit 1;
+          fi
+
+      - name: Terraform Plan (main -> selected env)
+        env:
+          TF_ENV: ${{ github.event.inputs.env }}
+        run: |
+          VAR_FILE="environments/${TF_ENV}/terraform.tfvars"
+          terraform plan -out=planfile -var-file="$VAR_FILE"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: planfile
+
+  apply-from-artifact:
+    needs: plan-on-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.env }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+
+      - name: Require environment input (apply)
+        run: |
+          if [ -z "${{ github.event.inputs.env }}" ]; then
+            echo "ERROR: workflow input 'env' is required for apply runs. Dispatch with an explicit env (dev/test/prod).";
+            exit 1;
+          fi
+
+      - name: Terraform Init (backend from environment secrets)
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER_NAME: ${{ secrets.AZURE_CONTAINER_NAME }}
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_ENV: ${{ github.event.inputs.env }}
+        run: |
+          # use the selected environment to construct the backend key
+          terraform init \
+            -backend-config="storage_account_name=${AZURE_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${AZURE_CONTAINER_NAME}" \
+            -backend-config="resource_group_name=${AZURE_RESOURCE_GROUP}" \
+            -backend-config="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
+            -backend-config="key=${TF_ENV}/terraform.tfstate"
+
+      - name: Terraform Apply (from artifact)
+        run: terraform apply -auto-approve planfile
