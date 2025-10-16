@@ -10,7 +10,7 @@ This repository demonstrates a minimal Terraform configuration plus a GitHub Act
 - `providers.tf` - provider and backend configuration (backend receives runtime `-backend-config` values from CI).
 - `variables.tf` - `location` and `environment` variables.
 - `environments/` - per-environment directories containing `terraform.tfvars` for `dev`, `test`, and `prod`.
-- `.github/workflows/terraform-environments.yml` - example GitHub Actions workflow that reads environment secrets and runs Terraform.
+- `.github/workflows/terraform.yml` - PR-driven GitHub Actions workflow that reads environment secrets, runs Terraform checks, applies after approval, and merges.
 
 ## Quickstart — what to configure in GitHub
 
@@ -30,6 +30,10 @@ This repository demonstrates a minimal Terraform configuration plus a GitHub Act
 
 	 You can also keep these as repository-level secrets temporarily, but environment secrets are recommended for per-environment isolation.
 
+3. (Recommended) For the `prod` GitHub Environment, configure required reviewers so that Terraform applies only run after an explicit approval inside GitHub Environments in addition to PR reviews.
+
+4. When opening a pull request, add a label such as `env:dev`, `env:test`, or `env:prod`. The workflow uses this label to choose which environment configuration and secrets to load. You can update the label at any time; the next workflow run will plan/apply against the new target.
+
 ## Azure setup notes (high level)
 
 - Create an Azure AD App Registration and configure a federated credential that trusts GitHub Actions for your repository and branches/workflows. The federated credential maps GitHub OIDC tokens to the App Registration without needing a client secret.
@@ -39,10 +43,11 @@ This repository demonstrates a minimal Terraform configuration plus a GitHub Act
 
 ## How the workflow works
 
-- The workflow (`.github/workflows/terraform-environments.yml`) is manually triggered (`workflow_dispatch`) and takes an `env` input (`dev`, `test`, `prod`).
-- The job declares `environment: ${{ github.event.inputs.env }}` so GitHub will expose only that environment's secrets to the job and enforce any protection rules.
-- The workflow does `terraform init` with `-backend-config` values read from environment secrets and sets a per-environment key like `dev/terraform.tfstate` to isolate state.
-- It then runs `terraform fmt -check`, `terraform validate`, and `terraform plan -var-file="environments/${{ github.event.inputs.env }}/terraform.tfvars"`.
+- The workflow (`.github/workflows/terraform.yml`) runs on `pull_request_target` events. A label such as `env:dev`, `env:test`, or `env:prod` determines which Terraform variables and GitHub Environment secrets to use.
+- PR runs execute from the PR head commit, run `terraform fmt -check`, `terraform validate`, and `terraform plan -refresh=false -var-file="environments/<env>/terraform.tfvars"`, then post (or update) a single plan comment on the PR.
+- A lightweight status job surfaces whether the plan detected changes directly in the GitHub check results, so reviewers know if they are approving a no-op or a change without opening the comment.
+- After an approval review, the workflow re-runs `terraform plan` against the live backend for the same commit, runs `terraform apply`, and merges the PR automatically once the apply succeeds.
+- GitHub Environment protection (for example, required reviewers on `prod`) can block the apply step until the environment approval is granted, adding another safeguard.
 
 ## Run it locally (example)
 
@@ -66,8 +71,7 @@ terraform plan -var-file="environments/dev/terraform.tfvars"
 ## Next steps you can do
 
 - Add the App Registration and federated credential automation in Terraform.
-- Add `terraform fmt` and `validate` checks as part of PR workflows.
-- Add `terraform plan -out` and upload the plan artifact so `apply` runs from an approved plan.
+- Upload the detailed plan output as a workflow artifact for auditing after each PR run.
+- Schedule a periodic drift-detection workflow (e.g., weekly `terraform plan -detailed-exitcode`) to catch out-of-band changes.
 
-If you'd like, I can add a `docs/` page that walks through creating the federated credential in Azure AD and setting the GitHub Environment protections step-by-step.
-
+If you'd like, I can add a `docs/` page that walks through creating the federated credential in Azure AD, configuring GitHub Environment protections, and wiring drift detection step-by-step.
