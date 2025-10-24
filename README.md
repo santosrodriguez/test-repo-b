@@ -1,77 +1,64 @@
-This repository demonstrates a minimal Terraform configuration plus a GitHub Actions workflow that:
-
-- Uses OIDC (id-token) to authenticate with Azure (no client secret stored in the repo).
-- Stores Terraform variable files per environment in `environments/<env>/terraform.tfvars`.
-- Uses GitHub Environments (`dev`, `test`, `prod`) to scope backend secrets and optionally require approvals for PROD.
+This repository demonstrates a Terraform + Azure setup that runs through GitHub Actions with OpenID Connect (OIDC) authentication and a remote state stored in an Azure Storage Account. Four deployment environments are provided out of the box: `dev`, `int`, `crt`, and `prd`.
 
 ## Repository layout
 
-- `main.tf` - minimal Azure resource (resource group) which uses `var.location` and includes `var.environment` in the name.
-- `providers.tf` - provider and backend configuration (backend receives runtime `-backend-config` values from CI).
-- `variables.tf` - `location` and `environment` variables.
-- `environments/` - per-environment directories containing `terraform.tfvars` for `dev`, `test`, and `prod`.
-- `.github/workflows/terraform.yml` - PR-driven GitHub Actions workflow that reads environment secrets, runs Terraform checks, applies after approval, and merges.
+- `main.tf` – sample Azure Resource Group that incorporates the `environment` suffix.
+- `providers.tf` – Terraform backend/provider configuration (backend values are supplied at runtime).
+- `variables.tf` – shared variables (`location`, `environment`).
+- `environments/<env>/terraform.tfvars` – per-environment variables.
+- `environments/<env>/backend.hcl` – remote backend settings; update the placeholder values with your storage account details before running Terraform.
+- `.github/workflows/terraform-plan.yml` – pull request validation that formats, validates, and plans against all environments.
+- `.github/workflows/terraform-apply.yml` – applies to `dev` automatically on merges to `main`; other environments are promoted via the `workflow_dispatch` input and GitHub Environment approvals.
 
-## Quickstart — what to configure in GitHub
+## Quickstart — GitHub configuration
 
-1. Create GitHub Environments
-	 - In the repo, go to Settings → Secrets and variables → Environments.
-	 - Create `dev`, `test`, `prod` environments.
-	 - (Optional) For `prod`, configure protection rules and required reviewers to force manual approvals before secrets are exposed.
+1. **Create GitHub Environments**  
+   Navigate to *Settings → Secrets and variables → Environments* and create environments named `dev`, `int`, `crt`, and `prd`. Configure environment protection (e.g., required reviewers) for `crt`/`prd` as needed.
 
-2. Add environment secrets (for each environment)
-	 - Add the following secrets to each environment (values differ per environment):
-		 - `AZURE_CLIENT_ID` — App Registration client id (used by OIDC/federation)
-		 - `AZURE_TENANT_ID` — Azure tenant id
-		 - `AZURE_SUBSCRIPTION_ID` — subscription id
-		 - `AZURE_STORAGE_ACCOUNT` — storage account for backend state
-		 - `AZURE_CONTAINER_NAME` — container name for state
-		 - `AZURE_RESOURCE_GROUP` — resource group containing the storage account
+2. **Add environment secrets**  
+   Add the following secrets to each GitHub Environment (values differ per environment only if you scope access differently):
+   - `AZURE_CLIENT_ID` – Azure AD application (service principal) client ID.
+   - `AZURE_TENANT_ID` – Azure AD tenant ID.
+   - `AZURE_SUBSCRIPTION_ID` – subscription ID that Terraform manages.
 
-	 You can also keep these as repository-level secrets temporarily, but environment secrets are recommended for per-environment isolation.
+3. **Update backend configuration files**  
+   Edit each `environments/<env>/backend.hcl` file and replace the placeholder values with your state resource group, storage account, and container. Each file already sets a unique `key` so that every environment stores state independently.
 
-3. (Recommended) For the `prod` GitHub Environment, configure required reviewers so that Terraform applies only run after an explicit approval inside GitHub Environments in addition to PR reviews.
+4. **Connect Azure AD to GitHub Actions**  
+   Create (or reuse) an Azure AD application, then configure one federated credential per GitHub environment using the subject format `repo:<org>/<repo>:environment:<env>`. Grant the service principal:
+   - `Storage Blob Data Contributor` on the storage account that hosts Terraform state.
+   - `Contributor` (or a more restrictive custom role) scoped to the resources each environment should manage.
 
-4. When opening a pull request, add a label such as `env:dev`, `env:test`, or `env:prod`. The workflow uses this label to choose which environment configuration and secrets to load. You can update the label at any time; the next workflow run will plan/apply against the new target.
+## Workflow behaviour
 
-## Azure setup notes (high level)
+- **terraform-plan.yml** runs on pull requests, iterating over `dev`, `int`, `crt`, and `prd`. Each job:
+  1. Authenticates to Azure using OIDC.
+  2. Inits Terraform with the matching backend file.
+  3. Runs `terraform fmt -check`, `terraform validate`, and `terraform plan`, uploading one plan artifact per environment.
 
-- Create an Azure AD App Registration and configure a federated credential that trusts GitHub Actions for your repository and branches/workflows. The federated credential maps GitHub OIDC tokens to the App Registration without needing a client secret.
-- Grant a service principal least-privilege RBAC roles in the target subscription/resource group:
-	- Storage Blob Data Contributor on the storage container used for Terraform state.
-	- Contributor (or narrower) role scoped to the resources you need to manage for each environment.
+- **terraform-apply.yml** runs on:
+  - `push` to `main`, automatically applying to `dev`.
+  - Manual `workflow_dispatch`, allowing promotion to `dev`, `int`, `crt`, or `prd`. GitHub Environment protections gate access and approvals before secrets are released.
 
-## How the workflow works
-
-- The workflow (`.github/workflows/terraform.yml`) runs on `pull_request_target` events. A label such as `env:dev`, `env:test`, or `env:prod` determines which Terraform variables and GitHub Environment secrets to use.
-- PR runs execute from the PR head commit, run `terraform fmt -check`, `terraform validate`, and `terraform plan -refresh=false -var-file="environments/<env>/terraform.tfvars"`, then post (or update) a single plan comment on the PR.
-- A lightweight status job surfaces whether the plan detected changes directly in the GitHub check results, so reviewers know if they are approving a no-op or a change without opening the comment.
-- After an approval review, the workflow re-runs `terraform plan` against the live backend for the same commit, runs `terraform apply`, and merges the PR automatically once the apply succeeds.
-- GitHub Environment protection (for example, required reviewers on `prod`) can block the apply step until the environment approval is granted, adding another safeguard.
-
-## Run it locally (example)
-
-If you want to iterate locally before using GitHub Actions:
-
-1. Create `terraform.tfvars` locally or pass `-var-file` when running Terraform. Example using the environment files:
+## Running Terraform locally
 
 ```bash
-terraform init -backend-config="storage_account_name=<account>" -backend-config="container_name=<container>" -backend-config="resource_group_name=<rg>" -backend-config="subscription_id=<sub>" -backend-config="key=dev/terraform.tfstate"
-terraform plan -var-file="environments/dev/terraform.tfvars"
+# Authenticate with Azure (e.g., az login) and export subscription/tenant if required.
+terraform init -backend-config=environments/dev/backend.hcl
+terraform plan -var-file=environments/dev/terraform.tfvars -var="environment=dev"
+terraform apply
 ```
 
-2. `terraform apply` only after reviewing the plan.
+Swap `dev` for another environment to work against different state files and variables.
 
-## Security notes and recommendations
+## Security recommendations
 
-- Use per-environment service principals (or at least per-environment RBAC) for least privilege.
-- Use GitHub Environment protection rules to require human approval for `prod` runs.
-- Avoid committing secrets or backend details; use `-backend-config` via CI secrets instead.
+- Keep the Azure AD service principal scoped to the minimum necessary resources per environment.
+- Require reviewers for `crt`/`prd` environments in GitHub to introduce manual gates for production changes.
+- Rotate federation credentials and review audit logs periodically.
 
-## Next steps you can do
+## Optional extensions
 
-- Add the App Registration and federated credential automation in Terraform.
-- Upload the detailed plan output as a workflow artifact for auditing after each PR run.
-- Schedule a periodic drift-detection workflow (e.g., weekly `terraform plan -detailed-exitcode`) to catch out-of-band changes.
-
-If you'd like, I can add a `docs/` page that walks through creating the federated credential in Azure AD, configuring GitHub Environment protections, and wiring drift detection step-by-step.
+- Add a scheduled drift detection workflow that runs `terraform plan -detailed-exitcode`.
+- Capture deployment metadata (e.g., plan summaries) in storage or monitoring for traceability.
+- Manage Azure AD application, federated credentials, and RBAC assignments as code in Terraform.
