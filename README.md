@@ -1,3 +1,7 @@
+[![Terraform Plan](https://github.com/santosrodriguez/test-repo-b/actions/workflows/terraform-plan.yml/badge.svg)](https://github.com/santosrodriguez/test-repo-b/actions/workflows/terraform-plan.yml)
+
+
+
 This repository demonstrates a Terraform + Azure setup that runs through GitHub Actions with OpenID Connect (OIDC) authentication and a remote state stored in an Azure Storage Account. Four deployment environments are provided out of the box: `dev`, `int`, `crt`, and `prd`.
 
 ## Repository layout
