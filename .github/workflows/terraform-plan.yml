@@ -44,7 +44,21 @@ jobs:
       - name: Terraform Version
         run: terraform version
 
+      - name: DEBUG: event metadata (temporary)
+        run: |
+          echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+          echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "GITHUB_HEAD_REF=$GITHUB_HEAD_REF"
+          echo "GITHUB_BASE_REF=$GITHUB_BASE_REF"
+          echo "GITHUB_EVENT_PATH=$GITHUB_EVENT_PATH"
+          if [ -f "$GITHUB_EVENT_PATH" ]; then
+            echo "pull_request.head.repo.full_name: $(jq -r '.pull_request.head.repo.full_name // empty' "$GITHUB_EVENT_PATH")"
+            echo "pull_request.head.ref: $(jq -r '.pull_request.head.ref // empty' "$GITHUB_EVENT_PATH")"
+          fi
+
       - name: Azure Login
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -52,6 +66,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Export ARM OIDC token path
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           if [ -z "${AZURE_FEDERATED_TOKEN_FILE:-}" ]; then
             echo "AZURE_FEDERATED_TOKEN_FILE is not set after azure/login" >&2
@@ -66,6 +81,7 @@ jobs:
           fi
 
       - name: Render backend config
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           printf '%s\n' \
             "resource_group_name  = \"${{ secrets.TF_RESOURCE_GROUP_NAME }}\"" \
@@ -75,6 +91,7 @@ jobs:
           > backend.auto.tfbackend
 
       - name: Terraform Init
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: terraform init -backend-config=backend.auto.tfbackend
 
       - name: Terraform Fmt
@@ -84,13 +101,20 @@ jobs:
         run: terraform validate
 
       - name: Terraform Plan
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           terraform plan \
             -var-file="environments/${{ matrix.environment }}/terraform.tfvars" \
             -var="environment=${{ matrix.environment }}" \
             -out="tfplan-${{ matrix.environment }}"
 
+      - name: Notice: forked PR - skip remote plan and upload
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          echo "This pull request comes from a fork. For security, CI will run 'terraform fmt' and 'terraform validate' but will not perform a remote-backed 'terraform init' or create/upload stateful plans."
+
       - name: Upload Plan
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ matrix.environment }}
