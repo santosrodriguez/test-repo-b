@@ -44,7 +44,7 @@ jobs:
       - name: Terraform Version
         run: terraform version
 
-      - name: DEBUG: event metadata (temporary)
+      - name: "DEBUG: event metadata (temporary)"
         run: |
           echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
           echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
@@ -108,7 +108,7 @@ jobs:
             -var="environment=${{ matrix.environment }}" \
             -out="tfplan-${{ matrix.environment }}"
 
-      - name: Notice: forked PR - skip remote plan and upload
+      - name: "Notice: forked PR - skip remote plan and upload"
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           echo "This pull request comes from a fork. For security, CI will run 'terraform fmt' and 'terraform validate' but will not perform a remote-backed 'terraform init' or create/upload stateful plans."
