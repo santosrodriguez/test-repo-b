@@ -62,8 +62,31 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Export ARM OIDC token path
+        run: |
+          if [ -z "${AZURE_FEDERATED_TOKEN_FILE:-}" ]; then
+            echo "AZURE_FEDERATED_TOKEN_FILE is not set after azure/login" >&2
+            exit 1
+          fi
+          {
+            echo "ARM_OIDC_TOKEN_FILE_PATH=$AZURE_FEDERATED_TOKEN_FILE"
+            echo "ARM_OIDC_TOKEN_FILE=$AZURE_FEDERATED_TOKEN_FILE"
+          } >> "$GITHUB_ENV"
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "ARM_OIDC_TOKEN=$ACTIONS_ID_TOKEN_REQUEST_TOKEN" >> "$GITHUB_ENV"
+          fi
+
+      - name: Render backend config
+        run: |
+          cat <<'EOF' > backend.auto.tfbackend
+          resource_group_name  = "${{ secrets.TF_RESOURCE_GROUP_NAME }}"
+          storage_account_name = "${{ secrets.TF_STORAGE_ACCOUNT }}"
+          container_name       = "${{ secrets.TF_CONTAINER_NAME }}"
+          key                  = "states/${{ steps.resolve-environment.outputs.selected }}/terraform.tfstate"
+          EOF
+
       - name: Terraform Init
-        run: terraform init -backend-config="environments/${{ steps.resolve-environment.outputs.selected }}/backend.hcl"
+        run: terraform init -backend-config=backend.auto.tfbackend
 
       - name: Terraform Plan
         run: |
