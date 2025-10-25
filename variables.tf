@@ -1,4 +1,3 @@
-
 variable "location" {
   type        = string
   description = "(Optional) Azure region to use. Defaults to East US."
@@ -7,6 +6,6 @@ variable "location" {
 
 variable "environment" {
   type        = string
-  description = "Deployment environment (dev, test, prod)"
+  description = "Deployment environment (dev, int, crt and prod)"
   default     = "dev"
 }
