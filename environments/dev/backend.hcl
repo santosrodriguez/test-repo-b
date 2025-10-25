@@ -1,4 +1,4 @@
-resource_group_name  = "<REPLACE_WITH_STATE_RESOURCE_GROUP>"
-storage_account_name = "<REPLACE_WITH_STATE_STORAGE_ACCOUNT>"
-container_name       = "<REPLACE_WITH_STATE_CONTAINER>"
-key                  = "states/dev/terraform.tfstate"
+resource_group_name  = ${{ vars.AZURE_CLIENT_ID }}
+storage_account_name = ${{ vars.AZURE_STORAGE_ACCOUNT }}
+container_name       = ${{ vars.AZURE_STORAGE_CONTAINER }}
+key                  = "tfstate-dev/terraform.tfstate"
