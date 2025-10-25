@@ -92,6 +92,27 @@ jobs:
           echo "Filtered env vars:"
           env | egrep 'AZURE|ARM|ACTIONS_ID_TOKEN' || true
 
+      - name: "DEBUG: decode GitHub ID token (temporary)"
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          echo "Requesting ID token from GitHub OIDC endpoint"
+          resp=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL") || true
+          idt=$(echo "$resp" | jq -r .value)
+          if [ -z "$idt" ] || [ "$idt" = "null" ]; then
+            echo "No id_token returned"
+            echo "raw response: $resp"
+            exit 0
+          fi
+          # decode JWT payload (no verification) and print only sub and aud
+          payload=$(echo "$idt" | awk -F. '{print $2}')
+          payload=$(printf '%s' "$payload" | python3 -c 'import sys,base64; p=sys.stdin.read().strip(); p+= "=" * (-len(p) % 4); print(base64.urlsafe_b64decode(p.encode()).decode())' 2>/dev/null || true)
+          if [ -n "$payload" ]; then
+            echo "id_token claims:"
+            echo "$payload" | jq -r '.sub, .aud' || true
+          else
+            echo "failed to decode id_token payload"
+          fi
+
       - name: Azure Login
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: azure/login@v2
