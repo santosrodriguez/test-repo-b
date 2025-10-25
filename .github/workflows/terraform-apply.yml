@@ -1,13 +1,6 @@
 name: Terraform Apply
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '**/*.tf'
-      - 'environments/**'
-      - '.github/workflows/terraform-plan.yml'
-      - '.github/workflows/terraform-apply.yml'
   workflow_dispatch:
     inputs:
       environment:
@@ -20,6 +13,10 @@ on:
           - int
           - crt
           - prd
+  workflow_run:
+    workflows: ["Terraform Plan"]
+    types:
+      - completed
 
 permissions:
   contents: read
@@ -28,34 +25,57 @@ permissions:
 env:
   TF_IN_AUTOMATION: true
   ARM_USE_OIDC: true
-  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   apply:
-    name: Apply ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}
+    name: Apply ${{ matrix.environment }}
     runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}
+    environment: ${{ matrix.environment }}
+    strategy:
+      matrix:
+        include:
+          - environment: dev
+          - environment: int
+          - environment: crt
+          - environment: prd
+    
     steps:
-      - name: Resolve environment
-        id: resolve-environment
+      - name: Decide whether this matrix row should run
+        id: decide
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "selected=${{ github.event.inputs.environment }}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            if [ "${{ github.event.workflow_run.conclusion }}" != "success" ] || [ "${{ github.event.workflow_run.head_branch }}" != "main" ]; then
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+            fi
           else
-            echo "selected=dev" >> "$GITHUB_OUTPUT"
+            if [ "${{ matrix.environment }}" != "${{ github.event.inputs.environment }}" ]; then
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Checkout
+        if: ${{ steps.decide.outputs.should_run == 'true' }}
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Terraform
+        if: ${{ steps.decide.outputs.should_run == 'true' }}
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.6
 
+      - name: Terraform Version
+        if: ${{ steps.decide.outputs.should_run == 'true' }}
+        run: terraform version
+
       - name: Azure Login
+        if: ${{ steps.decide.outputs.should_run == 'true' }}
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -63,6 +83,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Export ARM OIDC token path
+        if: ${{ steps.decide.outputs.should_run == 'true' }}
         run: |
           if [ -z "${AZURE_FEDERATED_TOKEN_FILE:-}" ]; then
             echo "AZURE_FEDERATED_TOKEN_FILE is not set after azure/login" >&2
@@ -77,23 +98,46 @@ jobs:
           fi
 
       - name: Render backend config
+        if: ${{ steps.decide.outputs.should_run == 'true' }}
         run: |
-          cat <<'EOF' > backend.auto.tfbackend
-          resource_group_name  = "${{ secrets.TF_RESOURCE_GROUP_NAME }}"
-          storage_account_name = "${{ secrets.TF_STORAGE_ACCOUNT }}"
-          container_name       = "${{ secrets.TF_CONTAINER_NAME }}"
-          key                  = "states/${{ steps.resolve-environment.outputs.selected }}/terraform.tfstate"
-          EOF
+          printf '%s\n' \
+            "resource_group_name  = \"${{ secrets.TF_RESOURCE_GROUP_NAME }}\"" \
+            "storage_account_name = \"${{ secrets.TF_STORAGE_ACCOUNT }}\"" \
+            "container_name       = \"${{ secrets.TF_CONTAINER_NAME }}\"" \
+            "key                  = \"states/${{ matrix.environment }}/terraform.tfstate\"" \
+          > backend.auto.tfbackend
+
+      - name: Download Plan (from triggering workflow)
+        if: ${{ steps.decide.outputs.should_run == 'true' && github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: .
+          run-id: ${{ github.event.workflow_run.id }}
 
       - name: Terraform Init
+        if: ${{ steps.decide.outputs.should_run == 'true' }}
         run: terraform init -backend-config=backend.auto.tfbackend
 
-      - name: Terraform Plan
+      - name: Terraform Plan (create plan for manual dispatch)
+        if: ${{ steps.decide.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' }}
         run: |
           terraform plan \
-            -var-file="environments/${{ steps.resolve-environment.outputs.selected }}/terraform.tfvars" \
-            -var="environment=${{ steps.resolve-environment.outputs.selected }}" \
+            -var-file="environments/${{ matrix.environment }}/terraform.tfvars" \
+            -var="environment=${{ matrix.environment }}" \
             -out=tfplan
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+        if: ${{ steps.decide.outputs.should_run == 'true' }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            PLAN_FILE="tfplan-${{ matrix.environment }}"
+          else
+            PLAN_FILE="tfplan"
+          fi
+          terraform apply -auto-approve "$PLAN_FILE"
+
+      - name: Cleanup backend file
+        if: always()
+        run: |
+          rm -f backend.auto.tfbackend || true

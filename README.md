@@ -13,6 +13,7 @@ This repository demonstrates a Terraform + Azure setup that runs through GitHub 
 - `environments/<env>/backend.hcl` – remote backend settings; update the placeholder values with your storage account details before running Terraform.
 - `.github/workflows/terraform-plan.yml` – pull request validation that formats, validates, and plans against all environments.
 - `.github/workflows/terraform-apply.yml` – applies to `dev` automatically on merges to `main`; other environments are promoted via the `workflow_dispatch` input and GitHub Environment approvals.
+ - `.github/workflows/terraform-apply.yml` – can be triggered manually or run automatically after a successful `terraform-plan.yml` on `main`; environment protection gates (approvals/reviewers) still apply for `crt`/`prd`.
 
 ## Quickstart — GitHub configuration
 
@@ -35,14 +36,12 @@ This repository demonstrates a Terraform + Azure setup that runs through GitHub 
 
 ## Workflow behaviour
 
-- **terraform-plan.yml** runs on pull requests, iterating over `dev`, `int`, `crt`, and `prd`. Each job:
-  1. Authenticates to Azure using OIDC.
-  2. Inits Terraform with the matching backend file.
-  3. Runs `terraform fmt -check`, `terraform validate`, and `terraform plan`, uploading one plan artifact per environment.
+ - **terraform-plan.yml** runs on pull requests and on pushes to `main`, iterating over `dev`, `int`, `crt`, and `prd`. Each job:
+    1. Authenticates to Azure using OIDC.
+    2. Inits Terraform with the matching backend file.
+    3. Runs `terraform fmt -check`, `terraform validate`, and `terraform plan`, uploading one plan artifact per environment.
 
-- **terraform-apply.yml** runs on:
-  - `push` to `main`, automatically applying to `dev`.
-  - Manual `workflow_dispatch`, allowing promotion to `dev`, `int`, `crt`, or `prd`. GitHub Environment protections gate access and approvals before secrets are released.
+ - **terraform-apply.yml** can be triggered manually via `workflow_dispatch`, or it runs automatically when `terraform-plan.yml` completes successfully on the `main` branch. When run automatically the apply workflow attempts to download the per-environment plan artifacts produced by the plan workflow and apply them; GitHub Environment protections still apply to gated environments (for example `crt`/`prd`).
 
 ## Running Terraform locally
 
