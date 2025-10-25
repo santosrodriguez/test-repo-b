@@ -70,6 +70,28 @@ jobs:
             echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN is not set"
           fi
 
+      - name: "DEBUG: az CLI and OIDC env (temporary)"
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          echo "which az: $(which az || echo not-found)"
+          echo "-- az --version --"
+          az --version || true
+          echo "-- az path listing --"
+          if which az >/dev/null 2>&1; then ls -la "$(which az)" || true; fi
+          echo "-- runner temp dirs --"
+          ls -la /home/runner/work || true
+          echo "AZURE_FEDERATED_TOKEN_FILE=${AZURE_FEDERATED_TOKEN_FILE:-<not-set>}"
+          if [ -n "${AZURE_FEDERATED_TOKEN_FILE:-}" ] && [ -f "$AZURE_FEDERATED_TOKEN_FILE" ]; then
+            echo "token file size: $(wc -c < \"$AZURE_FEDERATED_TOKEN_FILE\") bytes"
+          fi
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN is set (length=$(printf '%s' \"$ACTIONS_ID_TOKEN_REQUEST_TOKEN\" | wc -c))"
+          else
+            echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN is not set"
+          fi
+          echo "Filtered env vars:"
+          env | egrep 'AZURE|ARM|ACTIONS_ID_TOKEN' || true
+
       - name: Azure Login
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: azure/login@v2
