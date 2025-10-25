@@ -57,6 +57,19 @@ jobs:
             echo "pull_request.head.ref: $(jq -r '.pull_request.head.ref // empty' "$GITHUB_EVENT_PATH")"
           fi
 
+      - name: "DEBUG: OIDC variables (temporary)"
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          echo "AZURE_FEDERATED_TOKEN_FILE=${AZURE_FEDERATED_TOKEN_FILE:-<not-set>}"
+          if [ -n "${AZURE_FEDERATED_TOKEN_FILE:-}" ] && [ -f "$AZURE_FEDERATED_TOKEN_FILE" ]; then
+            echo "AZURE_FEDERATED_TOKEN_FILE exists: size=$(wc -c < \"$AZURE_FEDERATED_TOKEN_FILE\") bytes"
+          fi
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN is set (length=$(printf '%s' \"$ACTIONS_ID_TOKEN_REQUEST_TOKEN\" | wc -c))"
+          else
+            echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN is not set"
+          fi
+
       - name: Azure Login
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: azure/login@v2
